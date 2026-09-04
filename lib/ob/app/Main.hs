@@ -148,30 +148,43 @@ runTUI opts = mainWidget def $ initManager_ do
           . fmap (never,)
           . void
           . networkView
-          $ allCommands <&> \cmds -> for_ cmds \(color, cmd) ->
-            -- TODO flex here doesn't work -
-            -- tile flex
-            tile (fixed 10)
-              . row
-              $ for_ [displayCommand . _cmd_stdin, unLines . _cmd_stdout, unLines . _cmd_stderr] \f ->
-                tile flex
-                  -- tile (fixed 10)
-                  -- \$ col
-                  $ void
-                    -- . localTheme
-                    --   ( fmap \t ->
-                    --       t
-                    --         { _theme_default =
-                    --             withBackground color
-                    --               . withForeground Vty.black
-                    --               $ _theme_default t
-                    --         }
-                    --   )
+          $ allCommands <&> \cmds -> do
+            -- `flex` can't work here: `axis` divides its main-axis extent between
+            -- its children _before_ they run, so `flex` means "an equal share of
+            -- the parent" rather than "as tall as my content", and inside
+            -- `scrollable` that parent is a deliberately-huge 10000 rows
+            -- (`Reflex.Vty.Widget.Scroll.largeScrollHeight`) - hence a screenful
+            -- of blank lines per command, and a scroll bar whose thumb is one row
+            -- because `_scrollable_totalLines` is then ~10000 whatever the content.
+            -- Sizing to content can't go through the constraint solver at all:
+            -- heights are only knowable from the rendered images, i.e. as
+            -- `Behavior`s, while the layout tree is `Dynamic`. The upstream fix is
+            -- a content-sized (measure-then-stack) container - there's a prototype
+            -- (`flowV`) in the reflex-vty checkout.
+            -- We don't need it here, though: by the time we get here the log is
+            -- pure data, so we can just measure it ourselves and hand the solver a
+            -- fixed height. `grout` rather than `tile` because these rows aren't
+            -- focusable - with `tile`, Tab cycles through three entries per command.
+            -- TODO the next step, if this ever gets slow, is to stop asking the
+            -- layout system for anything at all: since we're measuring the content
+            -- anyway, we can render the whole log to one image - a `vertCat` of
+            -- `horizCat`s of `wrapTextImage` - and `tellImages` it straight off a
+            -- `Behavior`. That drops the `networkView` (which currently rebuilds
+            -- every row's layout node on every new command, when only the last row
+            -- ever changes) and the duplicated wrapping (`commandHeight` wraps the
+            -- text to measure it and then `richText` wraps it again to draw it).
+            -- Output is identical, including scroll-bar sizing; it's ~12x faster
+            -- at a few thousand commands, but that's not a size we hit yet, and
+            -- this version stays in the layout system's idiom.
+            dw <- displayWidth
+            for_ cmds \(color, cmd) ->
+              grout (fixed $ flip commandHeight cmd <$> dw)
+                . row
+                $ for_ (commandColumns cmd) \t ->
+                  grout flex
                     . richText
                       (RichTextConfig $ pure $ Vty.defAttr `Vty.withForeColor` color)
-                    . pure
-                    . T.decodeUtf8Lenient
-                  $ f cmd
+                    $ pure t
         -- TODO check how this actually renders once I've finished all the grid layout changes
         when opts.debug
           . void
@@ -283,3 +296,31 @@ hasOccurred :: (Reflex t, MonadHold t m) => Event t a -> m (Dynamic t Bool)
 hasOccurred = holdDyn False . (True <$) <=< headE
 firstTrue :: (Reflex t, MonadHold t m) => Dynamic t Bool -> m (Event t ())
 firstTrue = headE . void . ffilter id . updated
+
+-- | The three columns of a command row: what was sent, and what came back.
+commandColumns :: Cmd -> [Text]
+commandColumns cmd =
+  map
+    (T.decodeUtf8Lenient . ($ cmd))
+    [displayCommand . _cmd_stdin, unLines . _cmd_stdout, unLines . _cmd_stderr]
+
+{- | How many rows a command will actually draw at total width `w`.
+`wrapTextImage` is the very function `richText` uses, so this can't drift out
+of agreement with what gets rendered.
+-}
+commandHeight :: Int -> Cmd -> Int
+commandHeight w =
+  maximum
+    . (1 :)
+    . zipWith
+      (\colWidth -> Vty.imageHeight . wrapTextImage TextAlignment_Left colWidth Vty.defAttr)
+      (evenWidths 3 w)
+    . commandColumns
+
+{- | Split an extent between `n` columns the way `axis` splits it between `flex`
+children: `w `div` n` each, with the first `w `mod` n` getting one extra.
+-}
+evenWidths :: Int -> Int -> [Int]
+evenWidths n w = [q + if i < r then 1 else 0 | i <- [0 .. n - 1]]
+ where
+  (q, r) = w `divMod` n
