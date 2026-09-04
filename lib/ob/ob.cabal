@@ -1,0 +1,39 @@
+cabal-version: 3.4
+name: ob
+version: 0.1.0.0
+
+executable ob
+    main-is: Main.hs
+    hs-source-dirs: app
+    default-language: GHC2024
+    default-extensions:
+        BlockArguments
+        LambdaCase
+        NoFieldSelectors
+        OverloadedRecordDot
+        OverloadedStrings
+        PartialTypeSignatures
+        RecordWildCards
+        RecursiveDo
+    ghc-options:
+        -Wall
+        -threaded
+    build-depends:
+        base,
+        bytestring,
+        containers,
+        directory,
+        filepath,
+        fsnotify,
+        network,
+        open-browser >= 0.5,
+        optparse-applicative,
+        process,
+        reflex,
+        reflex-fsnotify,
+        reflex-ghci,
+        reflex-process,
+        reflex-vty >= 1.2,
+        text,
+        unix,
+        vty,

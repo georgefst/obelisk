@@ -24,6 +24,8 @@ module Obelisk.Backend
   , GhcjsWidgets(..)
   , GhcjsAppUrls(..)
   , defaultGhcjsWidgets
+  , ghciBrowserWidgets
+  , ghciBackendConfig
   -- * all.js script loading functions
   , deferredGhcjsScript
   , delayedGhcjsScript
@@ -75,13 +77,14 @@ import Obelisk.Frontend
 import Obelisk.Route
 import Obelisk.Snap.Extras (doNotCache, serveFileIfExistsAs)
 import Reflex.Dom.Core
-import Snap (MonadSnap, Snap, commandLineConfig, defaultConfig, getsRequest, httpServe, modifyResponse
+import Snap (MonadSnap, Snap, commandLineConfig, defaultConfig, getsRequest, httpServe, modifyResponse, setPort
+            , setStartupHook
             , rqPathInfo, rqQueryString, setContentType, writeBS, writeText
             , rqCookies, Cookie(..) , setHeader)
 import Snap.Internal.Http.Server.Config (Config (accessLog, errorLog), ConfigLog (ConfigIoLog))
 import System.Directory (doesPathExist)
 import System.FilePath ((</>))
-import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
+import System.IO (BufferMode (..), hFlush, hSetBuffering, stderr, stdout)
 
 data Backend backendRoute frontendRoute = Backend
   { _backend_routeEncoder :: Encoder (Either Text) Identity (R (FullRoute backendRoute frontendRoute)) PageName
@@ -131,6 +134,59 @@ defaultGhcjsWidgets = GhcjsWidgets
       preloadGhcjs $ _ghcjsAppUrls_allJs urls
       for_ (_ghcjsAppUrls_wasm urls) preloadWasm
   , _ghcjsWidgets_script = deferredGhcjsScript . _ghcjsAppUrls_allJs
+  }
+
+-- | Boot the page from a wasm GHCi browser-mode session instead of a compiled
+-- frontend: in place of @all.js@, import @main.js@ from the given dyld origin
+-- (e.g. @http:\/\/127.0.0.1:8002@).
+--
+-- The point of serving the dev page from the backend rather than opening dyld's
+-- own @\/main.html@ is that the app then runs on its own origin, so
+-- @window.location@ is a route its encoder understands, its relative asset URLs
+-- resolve, and same-origin XHR to the backend works. dyld sets
+-- @Access-Control-Allow-Origin: *@ precisely so the module can be imported from
+-- elsewhere.
+--
+-- Usually reached through 'ghciBackendConfig' rather than named directly.
+ghciBrowserWidgets :: Text -> GhcjsWidgets (GhcjsAppUrls -> FrontendWidgetT r ())
+ghciBrowserWidgets dyldOrigin = GhcjsWidgets
+  { -- Nothing to preload: the compiled frontend is not involved at all.
+    _ghcjsWidgets_preload = \_ -> blank
+  , _ghcjsWidgets_script = \_ ->
+      elAttr "script" ("type" =: "module" <> "src" =: (dyldOrigin <> "/main.js")) blank
+  }
+
+-- | Adapt a 'BackendConfig' for a backend being run from a GHCi session.
+--
+-- All three arguments are things a repl cannot get from the environment it is
+-- running in:
+--
+--   * the port is passed in rather than read from the command line, because
+--     inside a repl 'System.Environment.getArgs' is GHCi's own argv;
+--   * the page boots from the wasm GHCi browser-mode session at @dyldOrigin@
+--     instead of from the compiled frontend (see 'ghciBrowserWidgets');
+--   * @readyMarker@ is printed to stdout right before Snap enters its request
+--     loop, via Snap's 'setStartupHook' -- the same seam Warp exposes as
+--     @setBeforeMainLoop@. A repl has no way to hand back a value or run a
+--     callback in the process that started it, so a caller watching this
+--     session's own stdout (e.g. @ob@'s TUI) is the only channel available;
+--     printing a caller-chosen marker there, instead of polling the port from
+--     outside, lets it learn the instant the server is actually accepting
+--     connections. The marker is the caller's to choose (and to watch for)
+--     precisely because this module has no reason to know anything about how
+--     or whether it gets used -- 'ob' is only one possible caller.
+--
+-- The skeleton's @Backend.runWith@ is what applies this, so @ob@ evaluates
+--
+-- > Backend.runWith (ghciBackendConfig 8000 "http://127.0.0.1:8002" "obelisk: backend ready")
+--
+-- and the application's own entry point carries no dev-only configuration.
+ghciBackendConfig :: Int -> Text -> Text -> BackendConfig frontendRoute -> BackendConfig frontendRoute
+ghciBackendConfig port dyldOrigin readyMarker cfg = cfg
+  { _backendConfig_runSnap = runSnapWithConfig $
+      setStartupHook (\_ -> putStrLn (T.unpack readyMarker) >> hFlush stdout) $
+      setPort port defaultConfig
+  , _backendConfig_ghcjsWidgets = ghciBrowserWidgets dyldOrigin
   }
 
 -- | Serve a frontend, which must be the same frontend that Obelisk has built and placed in the default location

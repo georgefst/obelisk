@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# ob-wasm: run a command against the wasm cross toolchain.
+#
+#   ob-wasm cabal repl frontend
+#   ob-wasm ghc --version
+#
+# This wraps nix-haskell's `wasm32-unknown-wasi` wrapper, which puts the
+# unprefixed cross tools (ghc, ghc-pkg, cabal, ...) on PATH, and adds two
+# things on top:
+#
+#   * A stub liblibdl.so on LD_LIBRARY_PATH. GHC's wasm dyld asks the host for
+#     liblibdl.so while loading a .so; $OBELISK_WASM_LIBDL_DIR is exported by
+#     obelisk's dev shell so there is something to find.
+#
+#     On the current toolchain this earns its keep less than it looks. The lookup
+#     failing is only a -Wmissed-extra-shared-lib warning and the session works
+#     either way -- tested by unsetting the variable -- and the stub does not even
+#     parse ("unknown subsection type 5" in dyld.mjs), so it changes what the
+#     warning says rather than silencing it. Kept because older toolchains did
+#     fail the load; a candidate for deletion once nothing needs it.
+#
+#   * --builddir=dist-wasm for `cabal`, unless the caller passed one. This
+#     matters as soon as you want a wasm session and a native session at the
+#     same time: dist-newstyle/cache (plan.json and friends) is shared across
+#     compilers rather than split per platform, so two `cabal`s starting at
+#     once race to rewrite each other's plan. Native cabal keeps the default
+#     dist-newstyle; the wasm side gets dist-wasm, which is where
+#     Obelisk.Setup.Frontend.Wasm already puts its cross build.
+set -euo pipefail
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" || $# -eq 0 ]]; then
+  echo "Usage: ob-wasm <command> [ARGS...]"
+  echo ""
+  echo "  Runs <command> with the wasm32-unknown-wasi toolchain on PATH."
+  echo "  For 'cabal', --builddir defaults to \$OB_WASM_BUILDDIR (dist-wasm),"
+  echo "  keeping wasm builds out of the native dist-newstyle."
+  echo ""
+  echo "    ob-wasm cabal build frontend"
+  echo "    ob-wasm cabal repl --enable-multi-repl common frontend"
+  echo "    ob-wasm ghc --print-libdir"
+  exit 0
+fi
+
+if [[ -n "${OBELISK_WASM_LIBDL_DIR:-}" ]]; then
+  export LD_LIBRARY_PATH="${OBELISK_WASM_LIBDL_DIR}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+
+args=("$@")
+
+if [[ "$1" == "cabal" && $# -ge 2 ]]; then
+  seen_builddir=false
+  for a in "$@"; do
+    case "$a" in
+      --builddir|--builddir=*) seen_builddir=true ;;
+    esac
+  done
+  if ! $seen_builddir; then
+    # After the subcommand, so that `cabal --builddir=... build` stays valid.
+    args=("$1" "$2" "--builddir=${OB_WASM_BUILDDIR:-dist-wasm}" "${@:3}")
+  fi
+fi
+
+exec wasm32-unknown-wasi "${args[@]}"

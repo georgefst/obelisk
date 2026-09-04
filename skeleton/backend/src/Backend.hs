@@ -19,7 +19,11 @@ backend = Backend
 -- is what @ob-run@ relinks and restarts on each change; under @ob-repl@ it
 -- is in scope and can be called by hand.
 run :: IO ()
-run = runBackendWith config backend frontend
+run = runWith id
+
+-- TODO make sure this skeleton change is consistent with what we do in Lithograph's `runWith`
+runWith :: (BackendConfig FrontendRoute -> BackendConfig FrontendRoute) -> IO ()
+runWith f = runBackendWith (f config) backend frontend
   where
     config = BackendConfig
       { _backendConfig_runSnap = runSnapWithCommandLineArgs

@@ -35,6 +35,32 @@ let obeliskLib = import ./lib.nix { inherit system; };
 
     compressedFrontendJs = frontendOutput.compressed;
 
+    # GHCi's browser mode (GHCI_BROWSER=1) needs the `ws` npm package on
+    # NODE_PATH: dyld.mjs uses it to run the WebSocket server that the browser
+    # tab connects back to. nixpkgs has no nodePackages.ws, and this is only
+    # ever needed interactively, so fetch the tarball straight from the
+    # registry rather than taking a flake input for it.
+    nodeModules = pkgs.runCommand "obelisk-node-modules" { } ''
+      mkdir -p $out
+      tar xf ${pkgs.fetchurl {
+        url = "https://registry.npmjs.org/ws/-/ws-8.18.0.tgz";
+        hash = "sha256-oIIh8oUUcslEygF42JqYiMf0P72ZmK/Ip+xv5BfEyiA=";
+      }}
+      mv package $out/ws
+    '';
+
+    # An empty liblibdl.so for the wasm target. GHC's wasm dyld looks for one
+    # while loading a .so; the contents are irrelevant. On the current toolchain
+    # its absence is only a warning, so this may well be removable -- see the
+    # longer note in scripts/ob-wasm before deleting it.
+    wasmStubLibdl = pkgs.runCommand "wasm-stub-liblibdl"
+      { nativeBuildInputs = [ pkgs.pkgsCross.wasi32.buildPackages.llvmPackages.clang ]; }
+      ''
+        mkdir -p $out/lib
+        echo 'void __liblibdl_stub(void) {}' \
+          | wasm32-unknown-wasi-cc -shared -x c - -o $out/lib/liblibdl.so
+      '';
+
 in {
   imports = [
     (import "${nix-haskell-patches}/js/splitmix" { drivers = [ "haskell-nix" ]; })
@@ -358,11 +384,20 @@ in {
         runtimeInputs = [ pkgs.git ];
         text = builtins.readFile ../scripts/ob-init;
       })
+      (pkgs.writeShellApplication {
+        name = "ob-wasm";
+        text = builtins.readFile ../scripts/ob-wasm;
+      })
     ];
 
     shell.shellHook = ''
       export OBELISK_WASI_SHIM="${obeliskLib.wasi-shim}"
       export OBELISK_SKELETON="${obeliskLib.skeleton}"
+      # Read by scripts/ob-wasm. The wasm dynamic linker asks the host for
+      # liblibdl.so when loading a .so and fails the load without one; there is
+      # nothing in it, it just has to exist.
+      export OBELISK_WASM_LIBDL_DIR="${wasmStubLibdl}/lib"
+      export NODE_PATH="${nodeModules}''${NODE_PATH:+:$NODE_PATH}"
       # Where `ob-init --link` points deps/obelisk: this working tree, so a
       # linked scaffold tracks it. The skeleton above is a store copy of
       # skeleton/ alone, so ob-init cannot derive obelisk from its parent.

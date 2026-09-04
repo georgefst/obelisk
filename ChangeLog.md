@@ -2,6 +2,45 @@
 
 This project's release branch is `master`. This log is written from the perspective of the release branch: when changes hit `master`, they are considered released.
 
+## Unreleased
+
+* **`ob`, a GHCi TUI (prototype, `lib/ob`).** One `cabal repl` per component,
+  side by side: the frontend cross-compiled to wasm and evaluated in a browser
+  tab through GHCi's browser mode, the backend native and serving the app from
+  its own session, each reloading as its sources change. The beginnings of
+  folding the `ob-*` shell scripts back into a single Haskell `ob` as in v1.
+  Needs unreleased reflex-ghci patches; not yet on the dev shell's PATH.
+  * Note for anyone else running an app's entry point from `cabal repl`: the repl
+    has the *package* directory as its working directory, not the project root,
+    so an app that resolves paths relatively (the skeleton's backend keeps its
+    client session key at `config/backend/clientSessionKey`) will read and write
+    the wrong ones. `ob` wraps the server in `withCurrentDirectory`.
+* `Obelisk.Frontend.runFrontendReplacing`: `runFrontend` for a page that may
+  already be running the app, which is what a reload in an interactive wasm GHCi
+  session amounts to -- the session lives in the page, so the page is never
+  reloaded. It retires the previous run's network, skips hydration (a page load
+  brings exactly one lot of server-rendered markup) and reuses the configs the
+  first run read out of the document before `removeHTMLConfigs` removed them.
+  `runFrontend` itself is unchanged, and a compiled frontend keeps using it.
+  The skeleton's `frontend/app/Main.hs` gains a `reloadMain` that `ob` submits in
+  place of `main`.
+  * *Breaking change*: `runFrontendWithConfigsAndCurrentRoute` returns
+    reflex-dom's `RunningApp` rather than `()`.
+* `Obelisk.Backend.ghciBackendConfig` adapts a `BackendConfig` for a backend run
+  from a repl: it takes the port as an argument, since a repl has no useful argv
+  for `runSnapWithCommandLineArgs` to read, and boots the page from a wasm GHCi
+  browser-mode session instead of the compiled frontend.
+  * The skeleton's `Backend.hs` promotes `config` to a top-level definition and
+    adds `runWith`, so a repl can start the server with parts of the config
+    replaced. `run = runWith id`, so the compiled backend and `ob-run` behave
+    exactly as before, and an application still carries no dev-only
+    configuration.
+* `scripts/ob-wasm` runs a command against the wasm cross toolchain, with the
+  stub `liblibdl.so` its dynamic linker requires and a separate `--builddir` so
+  that a wasm and a native `cabal` can run at the same time. The dev shell also
+  now carries the `ws` npm package on `NODE_PATH`, which GHCi's browser mode
+  needs.
+
 ## 2.0.0.0
 
 Obelisk v2.0.0 promotes the `next` line to the mainline release. It is a
