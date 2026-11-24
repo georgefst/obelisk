@@ -3,4 +3,5 @@
 	url = git@github.com:georgefst/nix-haskell
 [submodule "deps/reflex-dom"]
 	path = deps/reflex-dom
-	url = https://github.com/ymeister/reflex-dom.git
+	url = git@github.com:georgefst/reflex-dom.git
+	branch = vibes
